@@ -1,0 +1,19 @@
+# Secrets / env
+.env
+.env.*
+!.env.example
+*.key
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Data / output / logs
+data/
+raw/
+*.log
+.DS_Store

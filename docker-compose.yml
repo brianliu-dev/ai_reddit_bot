@@ -1,0 +1,16 @@
+# ai_reddit_bot — weekly digest pipeline (WSL2 + Docker on the Windows box).
+#
+# Runs once per `docker compose run`. Schedule weekly with WSL2 cron (see README).
+# Depends on my_intern being up for the distillation step.
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      # Reach the my_intern router running on the same host (different compose project).
+      - MI_BASE_URL=${MI_BASE_URL:-http://host.docker.internal:8088}
+    volumes:
+      - ./data:/app/data                          # raw JSON history
+      - ${OBSIDIAN_VAULT_DIR:-./vault}:/vault     # Obsidian note output (host path)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

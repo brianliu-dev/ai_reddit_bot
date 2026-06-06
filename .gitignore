@@ -12,8 +12,8 @@ __pycache__/
 venv/
 *.egg-info/
 
-# Data / output / logs
-data/
-raw/
+# Data / output / logs — keep the dir structure, ignore the pulled JSON
+data/raw/*.json
+vault/
 *.log
 .DS_Store

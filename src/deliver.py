@@ -34,8 +34,19 @@ def write_obsidian_note(digest_md: str, run: dict, when: dt.date | None = None) 
 
 
 def _chunks(text: str, size: int) -> list[str]:
+    """Split text into <= size pieces, preferring line boundaries.
+
+    A single line longer than `size` is hard-split so no chunk ever exceeds the
+    limit (Telegram rejects messages over its cap with a 400).
+    """
     out, cur = [], ""
     for line in text.splitlines(keepends=True):
+        while len(line) > size:                 # line too long on its own — hard-split
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(line[:size])
+            line = line[size:]
         if len(cur) + len(line) > size:
             out.append(cur)
             cur = ""
@@ -53,16 +64,13 @@ def push_telegram(digest_md: str, when: dt.date | None = None) -> bool:
     api = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
 
     parts = _chunks(header + digest_md, _TELEGRAM_LIMIT)
+    base = {"chat_id": config.TELEGRAM_CHAT_ID, "disable_web_page_preview": True}
     with httpx.Client(timeout=30) as client:
         for part in parts:
-            resp = client.post(
-                api,
-                json={
-                    "chat_id": config.TELEGRAM_CHAT_ID,
-                    "text": part,
-                    "parse_mode": "Markdown",
-                    "disable_web_page_preview": True,
-                },
-            )
+            resp = client.post(api, json={**base, "text": part, "parse_mode": "Markdown"})
+            if resp.status_code == 400:
+                # Legacy Markdown chokes on unbalanced */_/[ in LLM-generated text.
+                # Resend the same chunk as plain text rather than lose the delivery.
+                resp = client.post(api, json={**base, "text": part})
             resp.raise_for_status()
     return True

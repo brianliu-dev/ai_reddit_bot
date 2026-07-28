@@ -10,6 +10,29 @@ _ROOT = Path(__file__).resolve().parent.parent
 _CFG = Path(os.environ.get("ARB_CONFIG", _ROOT / "config" / "subreddits.yaml"))
 
 
+def _load_dotenv() -> None:
+    """Load `.env` from the repo root into the environment for local runs.
+
+    Dependency-free, and uses setdefault so anything already set (e.g. Docker's
+    `env_file`, or an explicit shell export) always wins over the file.
+    """
+    env_path = _ROOT / ".env"
+    if not env_path.exists():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv()
+
+
 def load_config() -> dict:
     with open(_CFG, "r", encoding="utf-8") as fh:
         return yaml.safe_load(fh)

@@ -1,3 +1,5 @@
-praw==7.8.1
+# Reddit ingestion is via Project Arctic Shift (plain HTTP, no auth) — praw was
+# removed 2026-07-28 when Reddit denied API access. Nothing replaced it: the archive
+# needs no client library, so the dependency count went DOWN.
 httpx==0.28.1
 pyyaml==6.0.2

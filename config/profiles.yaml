@@ -1,0 +1,172 @@
+# Digest profiles — one file, many digests.
+#
+# A PROFILE is one digest: a subreddit group + a focus block + its own tuning.
+# Adding a topic ("self-hosting", "hardware", "cooking") is a new entry under
+# `profiles:` plus a matching prompts/focus/<focus>.md — never a fork of the pipeline
+# or of the analyst spec. Everything under `defaults:` is inherited and overridden
+# key-by-key, so a profile only states what actually differs.
+#
+# Select with `--profile <name>` or ARB_PROFILE. → src/config.py, src/rank.py
+
+defaults:
+  pull:
+    window_days: 7           # trailing window to digest (matches the weekly cadence)
+
+    # The archive leaves score/num_comments at 0/1 for ~36h after a post appears, so the
+    # window ENDS this many hours ago rather than at "now". Without it the freshest day
+    # and a half would all look like score-0 posts. Raise it if you ever see unscored
+    # posts leaking in; the only cost is that the digest trails reality slightly.
+    # ⚠️ This is the guard on the documented invalidation condition — a DAILY cadence
+    #    could not tolerate this lag and would need a different source (Apify).
+    min_post_age_hours: 36
+
+    # The archive hard-caps a page at 100 and defaults to newest-first, so the pull is
+    # PAGINATED (ascending, walking forward). Without it a busy sub returns only its
+    # last ~18 hours and the digest silently reports one day as a week.
+    fetch_limit: 100         # archive page size — 100 is the server's maximum
+    max_pages: 20            # safety stop; 20 x 100 covers a week of even r/ClaudeAI
+    posts_per_sub: 12        # keep the best N per sub after local ranking
+
+    # Absolute FLOOR only — no longer the selection mechanism. See `rank:` below.
+    # Kept low and dumb: its only job is dropping noise and unscored stragglers.
+    min_score: 10
+
+    top_comments: 10         # best comments to keep per post (ranked locally)
+    # Of those slots, at least this many are reserved for TOP-LEVEL comments; the rest go
+    # to the highest scorers at ANY depth. A floor, not a filter — an earlier version
+    # used only top-level comments whenever enough existed, which meant a standout deep
+    # reply could never appear at all. Set 0 for a pure score ranking.
+    min_top_level_comments: 6
+    comment_fetch_limit: 100 # page size for comments (server max 100)
+    comment_max_pages: 2     # 2 x 100 = up to 200 comments sampled per post before ranking
+    max_comment_chars: 800   # truncate long comments
+
+  # --- SELECTION RANKING (added Jul 30) -------------------------------------------
+  # Arctic Shift has no server-side sort, so ranking is entirely ours. Previously it was
+  # `sort by score, take 12` — i.e. a pure POPULARITY ranking, which is why the first
+  # digest skewed to headlines and drama: those score highest by a wide margin.
+  #
+  # Final rank = score  x  topic_multiplier  x  discussion_multiplier
+  #
+  # Every weight here is a knob, and `--explain-rank` prints what each one actually did
+  # on a real pull, so this stays measured rather than assumed.
+  rank:
+    # Per-subreddit RELATIVE cut, replacing the old single absolute number across seven
+    # wildly different subs (measured Jul 29: r/ClaudeAI's 12th-best post scored 1124
+    # while r/AI_Agents topped out at 330 — one threshold cannot serve both).
+    # Keep posts at or above this percentile of their OWN sub's window.
+    percentile: 0.85
+
+    # Discussion depth. A 300-point post with 400 comments is a better digest subject
+    # than a 3,000-point image macro with 12 — people argue about and explain techniques,
+    # they upvote and scroll past news. Ratio is normalised against the sub's own median
+    # so a chatty sub isn't systematically favoured over a quiet one.
+    discussion_weight: 0.6   # 0 disables; 1.0 makes comments-per-point as loud as score
+    discussion_cap: 2.0      # ceiling on the multiplier, so one viral thread can't dominate
+
+    # Topic shaping. Applied to the TITLE (and selftext when present), case-insensitive.
+    # These are deliberately blunt keyword lists rather than a classifier: a wrong-but-
+    # visible rule you can read and edit beats a clever one you can't audit.
+    topic_boost: 1.7         # multiplier when a boost pattern matches
+    topic_penalty: 0.45      # multiplier when a penalty pattern matches (both -> net ~0.77)
+
+    # Practice-shaped: someone reporting what they DID.
+    #
+    # ⚠️ TIGHTENED Jul 30 after measuring. The first draft included bare topic nouns —
+    # "agent", "prompt", "skill", "rag", "cost", "token". In a sub literally named
+    # r/AI_Agents every post matches "agent", so the boost fired on ALL of them and a
+    # uniform multiplier is arithmetically identical to no multiplier: it did nothing
+    # in the exact place it was most needed, while still lifting news posts that merely
+    # *mentioned* agents above technique posts elsewhere.
+    #
+    # The rule this taught: a pattern must discriminate WITHIN a subreddit, not describe
+    # it. So these are FIRST-PERSON REPORT SHAPES ("I did X and here's what happened"),
+    # not topic words. Topic relevance is already handled by choosing the subreddit.
+    boost_patterns:
+      - "\\bhow i\\b"
+      - "\\bhow we\\b"
+      - "\\bi built\\b"
+      - "\\bi made\\b"
+      - "\\bi spent\\b"
+      - "\\bi tested\\b"
+      - "\\bwe tested\\b"
+      - "\\bi tried\\b"
+      - "\\bi switched\\b"
+      - "\\bmy (setup|workflow|config|stack|pipeline|rig)\\b"
+      - "lessons? learned"
+      - "what i learned"
+      - "stopped using"
+      - "switched (from|to)"
+      - "after \\d+ (hours?|days?|weeks?|months?)"
+      - "in production"
+      - "\\bstep[- ]by[- ]step\\b"
+      - "\\btutorial\\b"
+      - "\\bwalkthrough\\b"
+      - "\\bcheat ?sheet\\b"
+      - "here'?s (how|what)"
+      - "\\bpsa\\b"
+      - "\\bgotcha"
+      - "\\bworkaround\\b"
+      - "\\bbenchmark(ed|s)?\\b"
+      - "\\bcompar(ed|ison)\\b"
+      - "\\bside[- ]by[- ]side\\b"
+
+    # Drama-shaped: news, politics, personalities, doom/hype. Not practice.
+    penalty_patterns:
+      - "\\bceo\\b"
+      - "lawsuit"
+      - "sue[ds]?\\b"
+      - "banned"
+      - "ban\\b"
+      - "open letter"
+      - "petition"
+      - "\\bagi\\b"
+      - "asi\\b"
+      - "doom"
+      - "existential"
+      - "regulat"
+      - "congress"
+      - "senate"
+      - "government"
+      - "election"
+      - "layoff"
+      - "fired"
+      - "valuation"
+      - "funding round"
+      - "raises \\$"
+      - "\\bipo\\b"
+      - "stock"
+      - "bubble"
+      - "hype"
+      - "rant"
+      - "unpopular opinion"
+      - "am i the only"
+      - "is it just me"
+      - "drama"
+      - "meme"
+      - "shitpost"
+
+profiles:
+  # -------------------------------------------------------------------------------
+  # The original digest, refocused on PRACTICE (Brian, Jul 30): "which harnesses,
+  # which skills, what workflows are people finding most useful."
+  ai-technique:
+    focus: ai-technique      # -> prompts/focus/ai-technique.md
+    subreddits:
+      # Practice-dense core — coding agents, local models, agents in production.
+      - ClaudeAI             # densest free feed for coding-agent workflow talk
+      - ClaudeCode           # Claude Code specifically: hooks, CLAUDE.md, subagents
+      - LocalLLaMA           # local models + hardware, heavily hands-on
+      - AI_Agents            # agents hitting real systems: failure modes + fixes
+      - ChatGPTCoding        # tool-agnostic AI-coding practice
+      - PromptEngineering    # practical prompt/context tactics
+      - cursor               # the other major harness — migration reports both ways
+      - LLMDevs              # builder-side LLM engineering
+      # Kept, lower yield for practice but still worth scanning:
+      - MachineLearning      # research; occasionally a technique worth stealing
+      # ⛔ DROPPED for this profile (Jul 30) — the sources of the news/politics skew:
+      #    singularity  -> AGI timelines, doom/accel, industry narrative
+      #    OpenAI       -> announcement- and drama-driven, thin on method
+      #    LangChain    -> single declining framework; LLMDevs covers the ground better
+      #    These are not "bad subs" — they are off-topic for a TECHNIQUE digest, and
+      #    they were structurally out-competing technique threads on raw score.

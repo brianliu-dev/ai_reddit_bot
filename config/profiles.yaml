@@ -24,7 +24,12 @@ defaults:
     # PAGINATED (ascending, walking forward). Without it a busy sub returns only its
     # last ~18 hours and the digest silently reports one day as a week.
     fetch_limit: 100         # archive page size — 100 is the server's maximum
-    max_pages: 20            # safety stop; 20 x 100 covers a week of even r/ClaudeAI
+    # ⚠️ Was 20 (=2000) with the note "r/ClaudeAI exceeded 2000 posts in one week" —
+    # the stop was set to the number already known to be exceeded, and because the scan
+    # walks ascending it silently dropped the NEWEST 32.6h of every r/ClaudeAI week
+    # (measured 2026-07-30: 2,412 posts). Raised with headroom, AND the pagination now
+    # reports `capped` so a future overrun is loud rather than invisible.
+    max_pages: 40            # safety stop; 40 x 100 = 4,000 posts/week/sub
     posts_per_sub: 12        # keep the best N per sub after local ranking
 
     # Absolute FLOOR only — no longer the selection mechanism. See `rank:` below.

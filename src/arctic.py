@@ -42,6 +42,8 @@ making "give me the best N comments" awkward to express.
 """
 from __future__ import annotations
 
+import os
+import random
 import time
 
 import httpx
@@ -53,6 +55,34 @@ BASE_URL = "https://arctic-shift.photon-reddit.com"
 _PAUSE_SECONDS = 0.4
 _MAX_RETRIES = 4
 _TIMEOUT = 45.0
+
+# ── Politeness throttle ──────────────────────────────────────────────────────
+# Arctic Shift is a FREE, donation-funded archive run by one person. The retry
+# logic below handles the archive pushing back; this handles us not shoving in
+# the first place — they are different problems and only one of them is polite.
+#
+# A single weekly run is ~35 requests per subreddit and nobody notices. A 2-month,
+# 9-subreddit backfill is ~2,500 requests in one sitting, which is a different kind
+# of guest. Every request goes through _throttle(), so the ceiling applies to normal
+# runs and backfills alike and cannot be forgotten at the call site.
+MIN_REQUEST_INTERVAL = float(os.environ.get("ARB_MIN_REQUEST_INTERVAL", "1.2"))
+_last_request_at = 0.0
+
+
+def _throttle() -> None:
+    """Block until MIN_REQUEST_INTERVAL has passed since the previous request.
+
+    Jittered so a long backfill doesn't arrive as a metronome — bursty-but-regular
+    traffic is easier to mistake for abuse than slightly irregular traffic.
+    """
+    global _last_request_at
+    if MIN_REQUEST_INTERVAL <= 0:
+        return
+    wait = MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_at)
+    if wait > 0:
+        time.sleep(wait + random.uniform(0, MIN_REQUEST_INTERVAL * 0.25))
+    _last_request_at = time.monotonic()
+
 
 
 class ArcticShiftError(RuntimeError):
@@ -85,6 +115,7 @@ def _get(client: httpx.Client, path: str, params: dict) -> list[dict]:
     last_error = None
     for attempt in range(_MAX_RETRIES):
         try:
+            _throttle()
             resp = client.get(f"{BASE_URL}{path}", params=params)
         except httpx.RequestError as exc:  # DNS, connect, read timeout
             last_error = exc
@@ -143,7 +174,8 @@ def fetch_post_index(
     after: int,
     before: int,
     limit: int = 100,
-    max_pages: int = 20,
+    max_pages: int = 40,
+    stats: dict | None = None,
 ) -> list[dict]:
     """PASS 1 — scan the window for {id, score, num_comments, created_utc} only.
 
@@ -163,7 +195,7 @@ def fetch_post_index(
     """
     return _paginate(client, "/api/posts/search",
                      {"subreddit": subreddit, "fields": SCAN_FIELDS},
-                     after, before, limit, max_pages)
+                     after, before, limit, max_pages, stats=stats)
 
 
 def hydrate_posts(client: httpx.Client, post_ids: list[str]) -> list[dict]:
@@ -245,6 +277,7 @@ def _paginate(
     limit: int,
     max_pages: int,
     progress=None,
+    stats: dict | None = None,
 ) -> list[dict]:
     """Walk a `created_utc`-ordered endpoint forward until the window is exhausted.
 
@@ -261,12 +294,25 @@ def _paginate(
     output looks perfectly healthy, it's just quietly reporting one day as seven.
 
     We therefore pass `sort=asc` and walk `after` forward from the oldest edge, which
-    makes the cursor monotonic and the termination condition obvious. `max_pages` is the
-    safety stop (r/ClaudeAI exceeded 2000 posts in one week).
+    makes the cursor monotonic and the termination condition obvious.
+
+    ⚠️ `max_pages` IS THE SAME BUG IN A HAT, and it bit on 2026-07-30. It was set to 20
+    (=2000 posts) with the note "r/ClaudeAI exceeded 2000 posts in one week" — i.e. the
+    safety stop was set to precisely the number already known to be exceeded. Because the
+    walk is ASCENDING, exhausting the cap silently truncates the NEWEST end: measured on
+    a real window, r/ClaudeAI has 2,412 posts/week and the cap dropped the final
+    **32.6 hours**. Same failure as the single-page bug — a healthy-looking digest
+    quietly reporting 5.6 days as 7.
+
+    The number is now generous, but a number is not the fix: any ceiling is eventually
+    exceeded by a growing subreddit. `stats["capped"]` reports whether the walk stopped
+    because the window ran out or because we ran out of pages, so a future truncation is
+    LOUD instead of invisible. Silence was the bug; the cap was only the trigger.
     """
     collected: list[dict] = []
     seen: set[str] = set()
     cursor = after
+    exhausted = False   # did we stop because the WINDOW ended (good) or the CAP hit (bad)?
 
     for _ in range(max_pages):
         params = {**base_params, "limit": limit, "sort": "asc"}
@@ -278,6 +324,7 @@ def _paginate(
         page = _get(client, path, params)
         time.sleep(_PAUSE_SECONDS)
         if not page:
+            exhausted = True
             break
 
         fresh = [p for p in page if p.get("id") and p["id"] not in seen]
@@ -290,6 +337,7 @@ def _paginate(
 
         # Short page = window exhausted.
         if len(page) < limit:
+            exhausted = True
             break
 
         # Advance past the newest item on this page. The +1 guarantees forward motion;
@@ -299,6 +347,11 @@ def _paginate(
         if cursor is not None and next_cursor <= cursor:
             break
         cursor = next_cursor
+
+    if stats is not None:
+        stats["capped"] = not exhausted
+        stats["pages_used"] = max_pages if not exhausted else None
+        stats["collected"] = len(collected)
 
     return collected
 

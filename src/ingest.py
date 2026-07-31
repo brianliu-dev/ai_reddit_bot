@@ -22,6 +22,7 @@ standalone:
 """
 from __future__ import annotations
 
+import datetime as dt
 import time
 
 import httpx
@@ -29,7 +30,8 @@ import httpx
 from . import arctic, config, rank
 
 
-def _window(pull_cfg: dict, now: int | None = None) -> tuple[int, int]:
+def _window(pull_cfg: dict, now: int | None = None,
+            week_ending: "dt.date | None" = None) -> tuple[int, int]:
     """The [after, before) unix window to pull.
 
     `before` is pulled BACK by `min_post_age_hours` rather than being "now". Arctic
@@ -44,7 +46,19 @@ def _window(pull_cfg: dict, now: int | None = None) -> tuple[int, int]:
     """
     now = now or int(time.time())
     lag = int(pull_cfg.get("min_post_age_hours", 36)) * 3600
-    before = now - lag
+
+    if week_ending is not None:
+        # BACKFILL: an explicit week boundary instead of "now minus lag". Historical
+        # posts are long since fully scored, so the lag guard is irrelevant for them —
+        # but it is still applied as a CEILING, so a backfill that runs up to the
+        # present can never quietly include unscored posts. The guard degrades to a
+        # no-op for old weeks and stays live for recent ones.
+        before = int(dt.datetime.combine(
+            week_ending, dt.time.min, tzinfo=dt.timezone.utc).timestamp())
+        before = min(before, now - lag)
+    else:
+        before = now - lag
+
     after = before - int(pull_cfg["window_days"]) * 86400
     return after, before
 
@@ -77,7 +91,8 @@ def _is_usable(post: dict, min_score: int) -> bool:
     return bool(post.get("title"))
 
 
-def pull(cfg: dict | None = None, progress=print) -> dict:
+def pull(cfg: dict | None = None, progress=print,
+         week_ending: "dt.date | None" = None) -> dict:
     """Pull posts + their best comments for all configured subreddits.
 
     Returns the run dict: {pulled_at, source, window, subreddits, post_count,
@@ -89,7 +104,7 @@ def pull(cfg: dict | None = None, progress=print) -> dict:
     # floor and the neutral multipliers collapse to score order. A legacy flat config
     # therefore keeps working unchanged rather than crashing on a missing key.
     rank_cfg = cfg.get("rank") or {}
-    after, before = _window(pull_cfg)
+    after, before = _window(pull_cfg, week_ending=week_ending)
 
     seen: set[str] = set()
     posts: list[dict] = []
@@ -100,6 +115,7 @@ def pull(cfg: dict | None = None, progress=print) -> dict:
             try:
                 # PASS 1 — scan the window for scores only (~40x less data than pulling
                 # full objects for thousands of posts to keep twelve).
+                scan_stats: dict = {}
                 index = arctic.fetch_post_index(
                     client,
                     name,
@@ -107,7 +123,19 @@ def pull(cfg: dict | None = None, progress=print) -> dict:
                     before,
                     limit=pull_cfg["fetch_limit"],
                     max_pages=pull_cfg["max_pages"],
+                    stats=scan_stats,
                 )
+                if scan_stats.get("capped"):
+                    # The scan walks ASCENDING, so hitting the page cap truncates the
+                    # NEWEST end of the window — the digest silently reports a partial
+                    # week. This must never be a quiet condition again (2026-07-30:
+                    # r/ClaudeAI lost 32.6h to a cap set at the exact number it was
+                    # already known to exceed).
+                    msg = (f"{name}: PAGE CAP HIT at {scan_stats['collected']} posts — "
+                           f"the newest part of the window was NOT scanned. "
+                           f"Raise pull.max_pages above {pull_cfg['max_pages']}.")
+                    errors.append(msg)
+                    progress(f"      🚨 {msg}")
                 # Two-stage cut. The absolute `min_score` is now only a noise floor;
                 # the real selection is a PER-SUB percentile, because one absolute
                 # number across subs whose 12th-best posts differ 30x (r/ClaudeAI 1124
@@ -148,6 +176,16 @@ def pull(cfg: dict | None = None, progress=print) -> dict:
                 1 for i, p in enumerate(selected)
                 if p["rank_explain"]["topic"] != 1.0 or p["rank_explain"]["discussion"] != 1.0
             )
+            if not index:
+                # A sub with zero scanned posts is indistinguishable from a quiet week
+                # unless we say so. Arctic Shift's coverage of r/ChatGPTCoding stops at
+                # 2026-07-07 while every other sub is current — that gap would otherwise
+                # just look like a thinner digest.
+                msg = f"{name}: 0 posts in window — quiet week or an archive coverage gap"
+                errors.append(msg)
+                progress(f"      ⚠️  {msg}")
+                continue
+
             progress(
                 f"      {name}: {len(index)} scanned -> {len(over)} over floor({floor:.0f}) "
                 f"-> hydrated {len(raw)} -> keeping {len(selected)} "

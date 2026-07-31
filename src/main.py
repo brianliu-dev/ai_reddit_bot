@@ -28,8 +28,9 @@ import argparse
 import datetime as dt
 import pathlib
 import sys
+import time
 
-from . import config, deliver, distill, ingest, storage
+from . import arctic, config, deliver, distill, ingest, storage
 
 
 def run(
@@ -161,6 +162,50 @@ def _deliver(digest: str, machine: str, pull: dict, dry_run: bool) -> int:
     return 0
 
 
+def backfill(weeks: int, pause: float = 5.0) -> int:
+    """Ingest N consecutive weekly windows, walking backwards from today.
+
+    INGEST ONLY, by design. Distillation needs a model and there is no backend
+    reachable right now, so this collects the corpora and the digests are generated
+    afterwards. That split is also just correct: the pull is the expensive, rate-limited,
+    externally-visible half, and it should not be re-run because a later stage failed.
+
+    Politeness is layered: arctic._throttle() paces every individual request, and this
+    adds a pause BETWEEN weeks so a long backfill reads as a series of ordinary runs
+    rather than one sustained hammering.
+    """
+    cfg = config.load_config()
+    today = dt.date.today()
+    print(f"Backfilling {weeks} weekly windows for profile "
+          f"{cfg.get('profile', '?')} ({len(cfg['subreddits'])} subs)", flush=True)
+    print(f"  throttle: {arctic.MIN_REQUEST_INTERVAL}s/request + {pause}s between weeks",
+          flush=True)
+
+    ok, failed = 0, []
+    for i in range(weeks):
+        week_ending = today - dt.timedelta(days=7 * i)
+        print(f"\n[week {i+1}/{weeks}] ending {week_ending} …", flush=True)
+        try:
+            run = ingest.pull(cfg, week_ending=week_ending)
+        except Exception as exc:  # one bad week must not cost the other seven
+            print(f"      ❌ {week_ending}: {exc}", flush=True)
+            failed.append(str(week_ending))
+            continue
+
+        path = storage.save_raw(run, when=week_ending)
+        print(f"      {run['post_count']} posts -> {path}", flush=True)
+        if run.get("errors"):
+            for e in run["errors"]:
+                print(f"      ⚠️  {e}", flush=True)
+        ok += 1
+        if i < weeks - 1:
+            time.sleep(pause)
+
+    print(f"\nbackfill done: {ok}/{weeks} weeks saved"
+          + (f", failed: {', '.join(failed)}" if failed else ""), flush=True)
+    return 0 if not failed else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="ai_reddit_bot weekly digest pipeline")
     parser.add_argument("--ingest-only", action="store_true",
@@ -174,10 +219,15 @@ def main() -> int:
     parser.add_argument("--print-prompt", nargs="?", const="", metavar="FILE",
                         help="compose the full prompt + corpus and write it out, then "
                              "stop (no backend needed); bare flag prints to stdout")
+    parser.add_argument("--backfill-weeks", type=int, metavar="N",
+                        help="ingest N weekly windows walking back from today "
+                             "(ingest-only; digests are generated separately)")
     parser.add_argument("--from-response", metavar="FILE",
                         help="skip distillation; split+deliver a response you already "
                              "have (no backend needed)")
     args = parser.parse_args()
+    if args.backfill_weeks:
+        return backfill(args.backfill_weeks)
     return run(
         ingest_only=args.ingest_only,
         from_raw=args.from_raw,

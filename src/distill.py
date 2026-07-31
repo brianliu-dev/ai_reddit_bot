@@ -170,7 +170,14 @@ def _compact(run: dict, max_posts: int = 120, max_chars: int = 90000) -> str:
 
 def build_prompt(run: dict) -> str:
     """The full user-side prompt. Shared by every backend so they can't diverge."""
-    week_of = dt.date.today().isoformat()
+    # The window END, not "today". Using today's date mislabelled every backfilled
+    # week — a Jul 23 corpus was handed to the model captioned "Week of 2026-07-30",
+    # which is exactly the kind of quiet wrongness a digest can't recover from.
+    win = run.get("window") or {}
+    if win.get("before"):
+        week_of = dt.datetime.utcfromtimestamp(int(win["before"])).date().isoformat()
+    else:
+        week_of = dt.date.today().isoformat()
     return (
         f"Week of {week_of}. {run['post_count']} posts across "
         f"{', '.join(run['subreddits'])}.\n\n{_compact(run)}"

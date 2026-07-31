@@ -34,6 +34,15 @@ def test_prompt_carries_posts_scores_and_comments():
     assert "LocalLLaMA" in p
 
 
+def test_prompt_labels_the_window_not_today():
+    """A backfilled corpus must be captioned with ITS week, not the run date. Using
+    date.today() handed a Jul 23 corpus to the model as 'Week of 2026-07-30'."""
+    import datetime as dt
+    before = int(dt.datetime(2026, 7, 23, tzinfo=dt.timezone.utc).timestamp())
+    run = {**RUN, "window": {"after": before - 7 * 86400, "before": before}}
+    assert "2026-07-23" in distill.build_prompt(run)
+
+
 def test_prompt_is_truncated_to_the_cap():
     big = {**RUN, "posts": [{**RUN["posts"][0], "selftext": "x" * 10_000}] * 200}
     assert len(distill.build_prompt(big)) <= 90_000 + 500  # body cap + header slack

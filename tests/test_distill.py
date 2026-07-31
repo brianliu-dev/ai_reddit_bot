@@ -34,6 +34,33 @@ def test_prompt_carries_posts_scores_and_comments():
     assert "LocalLLaMA" in p
 
 
+def test_prompt_reports_posts_actually_included_not_selected():
+    """The header must describe the corpus the model RECEIVES. It previously reported the
+    pull count, so an 84-post prompt was captioned '96 posts' and the model had no way to
+    know it held a subset."""
+    # Bodies are capped at 600 chars inside _compact, so exceeding the 90k budget needs
+    # many posts rather than large ones — the first version of this test used 40 fat
+    # posts, all of which fit, and asserted a shortfall that could never happen.
+    base = RUN["posts"][0]
+    posts = [{**base, "id": str(i), "subreddit": "S", "selftext": "z" * 3_000}
+             for i in range(200)]
+    text = distill.build_prompt({**RUN, "posts": posts, "post_count": 200})
+    header = text.splitlines()[0]
+    emitted = text.count("### [S]")
+    assert f"{emitted} posts" in header, header
+    assert emitted < 200 and "did not fit" in header, "shortfall must be stated explicitly"
+
+
+def test_prompt_names_only_contributing_subreddits():
+    """A configured sub that yielded nothing must not appear in the header — r/ChatGPTCoding
+    was listed for weeks while contributing zero posts."""
+    base = RUN["posts"][0]
+    run = {**RUN, "posts": [{**base, "subreddit": "Alive"}],
+           "subreddits": ["Alive", "DeadSub"]}
+    header = distill.build_prompt(run).splitlines()[0]
+    assert "Alive" in header and "DeadSub" not in header, header
+
+
 def test_prompt_labels_the_window_not_today():
     """A backfilled corpus must be captioned with ITS week, not the run date. Using
     date.today() handed a Jul 23 corpus to the model as 'Week of 2026-07-30'."""

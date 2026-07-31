@@ -135,7 +135,8 @@ def _interleave_by_subreddit(posts: list[dict]) -> list[dict]:
     return ordered
 
 
-def _compact(run: dict, max_posts: int = 120, max_chars: int = 90000) -> str:
+def _compact(run: dict, max_posts: int = 120, max_chars: int = 90000,
+             counts: dict | None = None) -> str:
     """Flatten posts into a compact text block for the model.
 
     Two deliberate properties, both learned the hard way:
@@ -147,6 +148,7 @@ def _compact(run: dict, max_posts: int = 120, max_chars: int = 90000) -> str:
     """
     lines: list[str] = []
     used = 0
+    included = 0
     for p in _interleave_by_subreddit(run["posts"])[:max_posts]:
         block: list[str] = [
             f"### [{p['subreddit']}] {p['title']}  (score {p['score']}, "
@@ -165,26 +167,46 @@ def _compact(run: dict, max_posts: int = 120, max_chars: int = 90000) -> str:
             continue          # skip this one, keep trying smaller later posts
         lines.append(chunk)
         used += len(chunk)
+        included += 1
+    if counts is not None:
+        counts["included"] = included
+        counts["total"] = len(run["posts"])
     return "\n".join(lines)
 
 
 def build_prompt(run: dict) -> str:
-    """The full user-side prompt. Shared by every backend so they can't diverge."""
-    # The window END, not "today". Using today's date mislabelled every backfilled
-    # week — a Jul 23 corpus was handed to the model captioned "Week of 2026-07-30",
-    # which is exactly the kind of quiet wrongness a digest can't recover from.
+    """The full user-side prompt. Shared by every backend so they can't diverge.
+
+    ⚠️ The header states how many posts the model IS BEING GIVEN, not how many the pull
+    selected. Those differ whenever the character budget drops posts, and the header
+    previously reported the pull count — so a corpus of 84 posts was captioned "96 posts"
+    and the model had no way to know it was working from a subset. Found 2026-07-30 by a
+    reader who counted; it is the same silent-thinning shape as the page cap and the
+    truncation bug, one layer further out. When the two differ, say so explicitly rather
+    than quietly picking one.
+    """
     win = run.get("window") or {}
     if win.get("before"):
         week_of = dt.datetime.utcfromtimestamp(int(win["before"])).date().isoformat()
     else:
         week_of = dt.date.today().isoformat()
+
+    counts: dict = {}
+    body = _compact(run, counts=counts)
+    included = counts.get("included", run["post_count"])
+    total = counts.get("total", run["post_count"])
+    # Only name the subreddits that actually contributed — a config-time list can
+    # include a sub that yielded nothing (r/ChatGPTCoding did, for weeks).
+    present = sorted({p.get("subreddit") for p in run["posts"] if p.get("subreddit")})
+    shortfall = (
+        f" ({total - included} further posts were selected but did not fit the context "
+        f"budget and are NOT included below)" if included < total else ""
+    )
     return (
-        f"Week of {week_of}. {run['post_count']} posts across "
-        f"{', '.join(run['subreddits'])}.\n\n{_compact(run)}"
+        f"Week of {week_of}. {included} posts across {', '.join(present)}."
+        f"{shortfall}\n\n{body}"
     )
 
-
-# ── backends ──────────────────────────────────────────────────────────────────
 
 def _via_router(prompt: str) -> str:
     body: dict = {

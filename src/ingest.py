@@ -233,7 +233,9 @@ def pull(cfg: dict | None = None, progress=print,
 
                 posts.append(_post_dict(post, comments))
 
-    posts.sort(key=lambda p: p["score"], reverse=True)
+    # Sort by the RANK score, not raw score — otherwise the per-sub topic/discussion
+    # weighting is silently discarded the moment the lists are merged.
+    posts.sort(key=lambda p: p.get("rank_score", p["score"]), reverse=True)
     return {
         "pulled_at": int(time.time()),
         "source": "arctic_shift",

@@ -36,7 +36,46 @@ def test_prompt_carries_posts_scores_and_comments():
 
 def test_prompt_is_truncated_to_the_cap():
     big = {**RUN, "posts": [{**RUN["posts"][0], "selftext": "x" * 10_000}] * 200}
-    assert len(distill.build_prompt(big)) <= 45_000 + 500  # body cap + header slack
+    assert len(distill.build_prompt(big)) <= 90_000 + 500  # body cap + header slack
+
+
+def test_truncation_never_amputates_a_whole_subreddit():
+    """THE REGRESSION TEST for 2026-07-30.
+
+    A balanced corpus truncated by a char budget must lose each subreddit's WEAKEST
+    posts, never an entire subreddit. Before the round-robin fix, a 96-post corpus of
+    12 x 8 subs reached the model as 43 posts with LLMDevs at 0/12 and two more subs at
+    1/12 — because the list was globally score-sorted and score magnitude varies ~30x
+    between subs, so 'the tail' was whole small subreddits.
+    """
+    import re
+    base = RUN["posts"][0]
+    posts = []
+    for i, sub in enumerate(["BigSub", "MidSub", "TinySub"]):
+        for n in range(12):
+            posts.append({**base, "subreddit": sub, "id": f"{sub}{n}",
+                          # BigSub scores dwarf TinySub's, as on real Reddit
+                          "score": (10_000 // (i + 1)) - n,
+                          "selftext": "y" * 3_000})
+    text = distill._compact({**RUN, "posts": posts}, max_chars=20_000)
+    seen = re.findall(r"### \[(\w+)\]", text)
+    per_sub = {s: seen.count(s) for s in ["BigSub", "MidSub", "TinySub"]}
+    assert all(v > 0 for v in per_sub.values()), f"a subreddit was amputated: {per_sub}"
+    assert max(per_sub.values()) - min(per_sub.values()) <= 1, f"unfair split: {per_sub}"
+
+
+def test_compaction_drops_whole_posts_not_partial_ones():
+    """A truncated final post hands the model a comment that stops mid-sentence, which
+    is worse than not sending it — the old code sliced the joined string."""
+    base = RUN["posts"][0]
+    posts = [{**base, "id": str(i), "subreddit": "S", "selftext": "z" * 3_000}
+             for i in range(20)]
+    text = distill._compact({**RUN, "posts": posts}, max_chars=8_000)
+    headers = text.count("### [S]")
+    assert headers > 0, "nothing survived the budget at all"
+    # _compact caps each body at 600 chars, so a COMPLETE block carries exactly that
+    # many; a sliced one would carry fewer. Equal counts == no partial post emitted.
+    assert text.count("z" * 600) == headers
 
 
 def test_unknown_backend_names_the_valid_ones():

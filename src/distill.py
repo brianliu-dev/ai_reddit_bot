@@ -101,23 +101,71 @@ def load_system_prompt(focus: str | None = None) -> str:
     )
 
 
-def _compact(run: dict, max_posts: int = 60, max_chars: int = 45000) -> str:
-    """Flatten posts into a compact text block for the model."""
+def _interleave_by_subreddit(posts: list[dict]) -> list[dict]:
+    """Round-robin the per-subreddit ranked lists into one fair global order.
+
+    WHY (found 2026-07-30, and it silently undid most of a day's work): the corpus is
+    balanced by construction — `posts_per_sub` from each subreddit — but pull() then
+    sorted it globally by RAW SCORE and _compact truncated the tail. Since score
+    magnitude varies ~30x between subreddits, "the tail" was not the weakest posts, it
+    was ENTIRE SMALL SUBREDDITS. Measured on a real 96-post corpus (12 x 8 subs), only
+    43 posts reached the model:
+
+        ClaudeAI 12/12   LocalLLaMA 12/12   ClaudeCode 12/12
+        MachineLearning 3/12   AI_Agents 2/12
+        PromptEngineering 1/12   cursor 1/12   LLMDevs 0/12
+
+    Every technique-dense subreddit was amputated, and the one added specifically for
+    builder-side engineering contributed nothing at all. The subreddit mix and the
+    per-sub ranking were both real; they were discarded at the very last step.
+
+    Round-robin makes truncation degrade PROPORTIONALLY: cutting the tail now drops each
+    subreddit's weakest post, never a whole subreddit. Each group keeps its own rank
+    order, so position within a sub still reflects the ranking.
+    """
+    groups: dict[str, list[dict]] = {}
+    for post in posts:
+        groups.setdefault(post.get("subreddit") or "?", []).append(post)
+
+    ordered: list[dict] = []
+    for tier in range(max((len(g) for g in groups.values()), default=0)):
+        for sub in sorted(groups):
+            if tier < len(groups[sub]):
+                ordered.append(groups[sub][tier])
+    return ordered
+
+
+def _compact(run: dict, max_posts: int = 120, max_chars: int = 90000) -> str:
+    """Flatten posts into a compact text block for the model.
+
+    Two deliberate properties, both learned the hard way:
+      * order is round-robin across subreddits, so a truncation cannot delete a whole
+        source (see _interleave_by_subreddit);
+      * the budget is spent PER POST and a post that does not fit is dropped whole,
+        rather than slicing the joined string and handing the model a half-post whose
+        final comment stops mid-sentence.
+    """
     lines: list[str] = []
-    for p in run["posts"][:max_posts]:
-        lines.append(
+    used = 0
+    for p in _interleave_by_subreddit(run["posts"])[:max_posts]:
+        block: list[str] = [
             f"### [{p['subreddit']}] {p['title']}  (score {p['score']}, "
             f"{p['num_comments']} comments)\n{p['permalink']}"
-        )
+        ]
         body = (p.get("selftext") or "").strip()
         if body:
-            lines.append(body[:600])
+            block.append(body[:600])
         for c in p.get("top_comments", [])[:3]:
             depth = "" if c.get("top_level", True) else " [reply]"
-            lines.append(f"- (+{c['score']}){depth} {c['body'][:300]}")
-        lines.append("")
-    text = "\n".join(lines)
-    return text[:max_chars]
+            block.append(f"- (+{c['score']}){depth} {c['body'][:300]}")
+        block.append("")
+
+        chunk = "\n".join(block)
+        if used + len(chunk) > max_chars:
+            continue          # skip this one, keep trying smaller later posts
+        lines.append(chunk)
+        used += len(chunk)
+    return "\n".join(lines)
 
 
 def build_prompt(run: dict) -> str:

@@ -163,10 +163,15 @@ profiles:
       - ClaudeCode           # Claude Code specifically: hooks, CLAUDE.md, subagents
       - LocalLLaMA           # local models + hardware, heavily hands-on
       - AI_Agents            # agents hitting real systems: failure modes + fixes
-      - ChatGPTCoding        # tool-agnostic AI-coding practice
       - PromptEngineering    # practical prompt/context tactics
       - cursor               # the other major harness — migration reports both ways
       - LLMDevs              # builder-side LLM engineering
+      # ⛔ REMOVED 2026-07-30 — r/ChatGPTCoding. Not a judgement on the sub: Arctic
+      #    Shift has its POSTS but never SCORED them (every score in {0,1}, every
+      #    comment count in {0,1}, measured across the whole 2-month backfill; a control
+      #    sub in the same window topped 76). Unscored posts are unrankable, so it
+      #    contributed 0 posts to all 8 backfilled weeks — 3 weeks with 0 scanned, 5
+      #    silently with 0 selected. Revisit if archive coverage of it resumes.
       # Kept, lower yield for practice but still worth scanning:
       - MachineLearning      # research; occasionally a technique worth stealing
       # ⛔ DROPPED for this profile (Jul 30) — the sources of the news/politics skew:

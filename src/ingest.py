@@ -191,6 +191,20 @@ def pull(cfg: dict | None = None, progress=print,
                 f"-> hydrated {len(raw)} -> keeping {len(selected)} "
                 f"({promoted} re-weighted)"
             )
+            if not selected:
+                # THE SECOND HOLE (found 2026-07-30, immediately after plugging the
+                # first). The zero-yield guard above only caught "0 SCANNED". A sub can
+                # scan dozens of posts and still contribute NOTHING because none clear
+                # the score floor — which is what r/ChatGPTCoding did for 5 of 8
+                # backfilled weeks, silently, while 3 weeks warned. Same silent-thinning
+                # failure, one step further down the pipeline.
+                # Root cause there: the archive holds the posts but never scored them
+                # (every score in {0,1}), so they are indistinguishable from unscored.
+                msg = (f"{name}: scanned {len(index)} but selected 0 — nothing cleared "
+                       f"floor({floor:.0f}). Sub is contributing nothing; check whether "
+                       f"the archive has scores for it.")
+                errors.append(msg)
+                progress(f"      ⚠️  {msg}")
 
             for post in selected:
                 pid = post.get("id")

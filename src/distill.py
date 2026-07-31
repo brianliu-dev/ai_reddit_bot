@@ -135,13 +135,16 @@ def _interleave_by_subreddit(posts: list[dict]) -> list[dict]:
     return ordered
 
 
-def _compact(run: dict, max_posts: int = 120, max_chars: int = 90000,
+def _compact(run: dict, max_posts: int = 120, max_chars: int = 120000,
              counts: dict | None = None) -> str:
     """Flatten posts into a compact text block for the model.
 
     Two deliberate properties, both learned the hard way:
       * order is round-robin across subreddits, so a truncation cannot delete a whole
         source (see _interleave_by_subreddit);
+      * the budget (raised 45k -> 90k -> 120k) is sized so a normal week fits ENTIRELY:
+        measured full corpora run 100-105k chars, and at 90k every week was silently
+        losing 9-17 of its lowest-ranked posts for no reason anyone had checked;
       * the budget is spent PER POST and a post that does not fit is dropped whole,
         rather than slicing the joined string and handing the model a half-post whose
         final comment stops mid-sentence.

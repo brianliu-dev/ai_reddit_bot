@@ -72,7 +72,7 @@ def test_prompt_labels_the_window_not_today():
 
 def test_prompt_is_truncated_to_the_cap():
     big = {**RUN, "posts": [{**RUN["posts"][0], "selftext": "x" * 10_000}] * 200}
-    assert len(distill.build_prompt(big)) <= 90_000 + 500  # body cap + header slack
+    assert len(distill.build_prompt(big)) <= 120_000 + 500  # body cap + header slack
 
 
 def test_truncation_never_amputates_a_whole_subreddit():
